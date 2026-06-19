@@ -11,12 +11,14 @@ Usage:
 
 No internet, no pip installs. Press Enter to reveal answers; rate yourself.
 """
-import random
-import sys
-import textwrap
+import random        # to shuffle cards and generate random math drills
+import sys            # to read command-line arguments (which mode to run)
+import textwrap       # to wrap long answer text neatly in the terminal
 
 # ---------------------------------------------------------------------------
 # FLASHCARDS  (category, question, answer)
+# Each card is a 3-tuple. Add your own here - the tools below pick them up
+# automatically. Categories group the cards so you can drill one topic.
 # ---------------------------------------------------------------------------
 CARDS = [
     # ---- python ----
@@ -138,53 +140,68 @@ CARDS = [
 
 
 def _wrap(text, width=78, indent="    "):
+    """Indent and word-wrap text so long answers read nicely in a terminal.
+
+    We split on existing newlines first, then wrap each paragraph, then re-join
+    so intentional line breaks in the answer are preserved.
+    """
     return "\n".join(textwrap.fill(p, width=width, initial_indent=indent,
                                    subsequent_indent=indent)
                      for p in text.split("\n"))
 
 
 def run_flashcards(category=None):
+    """Active-recall flashcards: show a question, wait, reveal, self-grade."""
+    # Keep only cards in the chosen category. `category in (None, c[0])` means:
+    # if no category was given (None) keep everything, else keep matches.
     cards = [c for c in CARDS if category in (None, c[0])]
     if not cards:
         print(f"No cards for category '{category}'. Try: python practice.py list")
         return
-    random.shuffle(cards)
-    score = {"good": 0, "again": 0}
+    random.shuffle(cards)                       # randomize order so you don't memorize sequence
+    score = {"good": 0, "again": 0}             # tally of how you rated yourself
     print(f"\n=== Flashcards: {category or 'ALL'} ({len(cards)} cards) ===")
     print("Press Enter to reveal the answer. After each: [g]ood / [a]gain / [q]uit\n")
+    # enumerate(..., 1) numbers the cards starting at 1; each card unpacks to (category, question, answer).
     for i, (cat, q, a) in enumerate(cards, 1):
         print(f"[{i}/{len(cards)}] ({cat})")
         print(_wrap("Q: " + q))
         try:
-            input("  ... press Enter for answer ...")
+            input("  ... press Enter for answer ...")   # pause so you answer from memory first
         except (EOFError, KeyboardInterrupt):
-            break
-        print(_wrap(a))
+            break                                # Ctrl+C / piped-EOF cleanly ends the session
+        print(_wrap(a))                          # now reveal the model answer
         try:
+            # .strip() removes stray spaces, .lower() makes input case-insensitive.
             choice = input("\n  [g]ood / [a]gain / [q]uit > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             break
         if choice == "q":
             break
-        elif choice == "a":
+        elif choice == "a":                      # "again" = you want to review this one
             score["again"] += 1
-        else:
+        else:                                    # anything else counts as "good/confident"
             score["good"] += 1
         print("-" * 60)
     print(f"\nDone. Confident: {score['good']}  |  Review again: {score['again']}")
 
 
 def run_math_drills(rounds=8):
-    """Generated probability / EV / RTP problems with checked answers."""
+    """Generated probability / EV / RTP problems with checked answers.
+
+    Each round picks a random drill-generator, which returns
+    (question_text, numeric_answer, explanation). We then check what you typed.
+    """
     print("\n=== Math drills (probability / RTP / EV) ===")
     print("Type your numeric answer; 's' to skip, 'q' to quit. Tolerance is generous.\n")
-    correct = 0
-    total = 0
+    correct = 0          # how many you got right
+    total = 0            # how many you actually attempted
+    # The pool of question makers (functions are first-class objects, so we store them in a list).
     generators = [_drill_three_of_a_kind, _drill_at_least_one, _drill_rtp_from_ev,
                   _drill_house_edge, _drill_combos]
     for r in range(rounds):
-        gen = random.choice(generators)
-        question, answer, explain = gen()
+        gen = random.choice(generators)         # pick a random drill type
+        question, answer, explain = gen()       # generate a fresh problem + its answer
         print(f"[{r+1}/{rounds}] {question}")
         try:
             raw = input("  your answer > ").strip().lower()
@@ -193,46 +210,53 @@ def run_math_drills(rounds=8):
         if raw == "q":
             break
         total += 1
-        if raw == "s":
+        if raw == "s":                          # skip: just show the answer, don't score it
             print(f"  -> answer: {answer:.6g}\n     {explain}\n")
             continue
         try:
+            # Accept "0.41" or "41%": strip a trailing % and divide by 100 if present.
             val = float(raw.rstrip("%"))
             if "%" in raw:
                 val /= 100.0
-        except ValueError:
+        except ValueError:                      # input wasn't a number at all
             print(f"  couldn't parse. answer was {answer:.6g}\n     {explain}\n")
             continue
+        # Correct if within a tiny absolute tolerance OR 2% relative (rounding-friendly).
         ok = abs(val - answer) <= max(1e-4, abs(answer) * 0.02)
-        # also accept percentage form for probabilities
+        # Also accept a percentage typed without the % sign (e.g. 41 for 0.41).
         if not ok and abs(val/100 - answer) <= max(1e-4, abs(answer)*0.02):
             ok = True
         print(("  CORRECT" if ok else f"  not quite -> {answer:.6g}") + f"\n     {explain}\n")
-        correct += ok
+        correct += ok                           # bool adds as 0 or 1
     if total:
         print(f"Score: {correct}/{total}")
 
 
+# --- drill generators: each returns (question, numeric_answer, explanation) ---
+
 def _drill_three_of_a_kind():
+    """P(three of a kind) = p^3 for independent reels. p = count / strip length."""
     strip_len = random.choice([20, 24, 30, 32])
     count = random.choice([1, 2, 3])
-    p = count / strip_len
-    ans = p ** 3
+    p = count / strip_len                       # probability of the symbol on one reel
+    ans = p ** 3                                # three independent reels -> multiply
     return (f"A symbol appears {count} time(s) on each of 3 independent {strip_len}-position "
             f"reels. P(three of them on one line)?",
             ans, f"({count}/{strip_len})^3 = {ans:.6g}")
 
 
 def _drill_at_least_one():
+    """'At least one' is easiest via the complement: 1 - P(none)."""
     reels = random.choice([3, 4, 5])
     p = random.choice([0.05, 0.08, 0.1, 0.2])
-    ans = 1 - (1 - p) ** reels
+    ans = 1 - (1 - p) ** reels                  # 1 - (probability it appears on no reel)
     return (f"Each of {reels} reels shows a scatter with probability {p}. "
             f"P(at least one scatter)?",
             ans, f"1 - (1-{p})^{reels} = {ans:.6g}")
 
 
 def _drill_rtp_from_ev():
+    """RTP = expected value of the return per unit bet = sum(payout * probability)."""
     pay1, p1 = random.choice([(10, 0.05), (5, 0.1), (20, 0.03)])
     pay2, p2 = random.choice([(2, 0.2), (3, 0.15), (1, 0.3)])
     ev = pay1 * p1 + pay2 * p2
@@ -241,6 +265,7 @@ def _drill_rtp_from_ev():
 
 
 def _drill_house_edge():
+    """House edge is simply 1 - RTP."""
     rtp = random.choice([0.92, 0.94, 0.955, 0.965, 0.97])
     ans = 1 - rtp
     return (f"A game has RTP = {rtp:.3g}. What is the house edge?",
@@ -248,6 +273,7 @@ def _drill_house_edge():
 
 
 def _drill_combos():
+    """Total combinations = stops ^ reels (multiplication principle, independent reels)."""
     reels = random.choice([3, 4, 5])
     stops = random.choice([20, 24, 32])
     ans = stops ** reels
@@ -260,6 +286,7 @@ def run_mock(n=10):
     """Timed-feel mock: random mix of flashcards, you self-grade out loud."""
     print("\n=== MOCK INTERVIEW (say answers OUT LOUD, then reveal) ===")
     print("Simulate the real thing: speak your full answer before pressing Enter.\n")
+    # random.sample picks n DISTINCT cards (no repeats), capped at how many we have.
     cards = random.sample(CARDS, min(n, len(CARDS)))
     for i, (cat, q, a) in enumerate(cards, 1):
         print(f"Question {i}/{len(cards)}  ({cat})")
@@ -274,27 +301,31 @@ def run_mock(n=10):
 
 
 def list_categories():
-    from collections import Counter
-    counts = Counter(c[0] for c in CARDS)
+    """Print each category and how many cards it has."""
+    from collections import Counter            # Counter tallies occurrences for us
+    counts = Counter(c[0] for c in CARDS)       # count cards by their category (c[0])
     print("\nCategories (use: python practice.py qa <category>):")
     for cat, n in sorted(counts.items()):
-        print(f"  {cat:12} {n} cards")
+        print(f"  {cat:12} {n} cards")          # :12 pads the name to 12 chars for alignment
     print(f"  {'TOTAL':12} {len(CARDS)} cards\n")
 
 
 def menu():
-    print(__doc__)
+    """Default screen: show usage (the module docstring) + categories."""
+    print(__doc__)                              # __doc__ is the triple-quoted string at the top of the file
     list_categories()
     print("Quick start:  python practice.py qa   |   python practice.py math   |   "
           "python practice.py mock")
 
 
 def main():
-    args = sys.argv[1:]
+    """Entry point: read the first CLI arg and dispatch to the right mode."""
+    args = sys.argv[1:]                         # everything after the script name
     if not args:
-        menu(); return
+        menu(); return                          # no args -> show the menu and stop
     cmd = args[0]
     if cmd == "qa":
+        # Optional second arg is the category to filter by (or None for all).
         run_flashcards(args[1] if len(args) > 1 else None)
     elif cmd == "math":
         run_math_drills()
@@ -303,8 +334,10 @@ def main():
     elif cmd == "list":
         list_categories()
     else:
-        menu()
+        menu()                                  # unknown command -> fall back to the menu
 
 
+# This guard means main() runs only when the file is executed directly
+# (python practice.py), NOT when it's imported by another module.
 if __name__ == "__main__":
     main()
