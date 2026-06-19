@@ -32,20 +32,26 @@ def _run_chunk(args):
 
 
 def _merge(parts):
-    """Combine per-worker (n, mean, m2, wins, max) into global stats (Chan et al.)."""
-    N = 0
-    mean = 0.0
-    M2 = 0.0
-    wins = 0
-    max_win = 0.0
-    for n, m, m2, w, mx in parts:
+    """Combine per-worker (n, mean, m2, wins, max) into global stats (Chan et al.).
+
+    You can't just average the per-worker means if the chunks differ in size, and
+    you can't just add the variances. The Chan parallel formula below combines two
+    groups' counts/means/M2 exactly - so 4 workers give the SAME result as 1.
+    """
+    N = 0              # total count so far
+    mean = 0.0         # combined mean so far
+    M2 = 0.0           # combined sum of squared deviations so far
+    wins = 0           # total winning spins
+    max_win = 0.0      # overall biggest win
+    for n, m, m2, w, mx in parts:               # fold in each worker's partial result
         if n == 0:
             continue
-        delta = m - mean
+        delta = m - mean                        # gap between this chunk's mean and the combined mean
         new_N = N + n
-        # combined mean
+        # Combined mean = weighted average of the two means by their counts.
         mean = (N * mean + n * m) / new_N
-        # combined M2 (sum of squared deviations)
+        # Combined M2 adds both chunks' M2 PLUS a correction term for the gap between
+        # their means (delta^2 weighted by the two counts). This is the key step.
         M2 = M2 + m2 + delta * delta * N * n / new_N
         N = new_N
         wins += w
@@ -55,20 +61,24 @@ def _merge(parts):
 
 
 def run_parallel(total_spins: int, workers: int | None = None, bet: float = 1.0) -> dict:
-    workers = workers or cpu_count()
-    per = total_spins // workers
+    workers = workers or cpu_count()            # default to one worker per CPU core
+    per = total_spins // workers                # base spins per worker (integer division)
+    # Each chunk is (seed, n_spins). A distinct seed per worker keeps the random
+    # streams independent so we don't simulate the same spins 4 times.
     chunks = [(seed, per) for seed in range(workers)]
-    leftover = total_spins - per * workers
+    leftover = total_spins - per * workers      # spins lost to integer division...
     if leftover:
-        chunks[0] = (chunks[0][0], chunks[0][1] + leftover)
+        chunks[0] = (chunks[0][0], chunks[0][1] + leftover)   # ...give them to worker 0
 
+    # Pool spins up `workers` separate PROCESSES (own GIL each) and maps the chunks
+    # across them in true parallel. `with` ensures the pool is cleaned up afterwards.
     with Pool(workers) as pool:
-        parts = pool.map(_run_chunk, chunks)
+        parts = pool.map(_run_chunk, chunks)    # blocks until all workers finish
 
-    N, mean, variance, wins, max_win = _merge(parts)
-    std = variance ** 0.5
+    N, mean, variance, wins, max_win = _merge(parts)   # combine the partial results
+    std = variance ** 0.5                       # ** 0.5 is square root
     rtp = mean / bet
-    ci = (1.96 * std / (N ** 0.5) / bet) if N else 0.0
+    ci = (1.96 * std / (N ** 0.5) / bet) if N else 0.0  # 95% CI half-width (see bot.py)
     return {
         "spins": N,
         "workers": workers,
